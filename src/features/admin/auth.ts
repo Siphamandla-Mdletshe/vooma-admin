@@ -20,19 +20,31 @@ function apiBaseUrl() {
   const baseUrl = new URL(
     import.meta.env.VITE_API_BASE_URL?.trim() || "http://localhost:4000",
   );
-  const localHttp =
+  const hostname = baseUrl.hostname;
+  const octets = hostname.split(".").map(Number);
+  const privateIpv4 =
+    octets.length === 4 &&
+    octets.every((octet) => Number.isInteger(octet) && octet >= 0 && octet <= 255) &&
+    (octets[0] === 10 ||
+      (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31) ||
+      (octets[0] === 192 && octets[1] === 168));
+  const developmentHttp =
+    import.meta.env.DEV &&
     baseUrl.protocol === "http:" &&
-    ["localhost", "127.0.0.1", "::1"].includes(baseUrl.hostname);
-  if (baseUrl.protocol !== "https:" && !(import.meta.env.DEV && localHttp)) {
-    throw new Error("The Vooma API must use HTTPS outside local development.");
+    (["localhost", "127.0.0.1", "[::1]"].includes(hostname) || privateIpv4);
+  if (baseUrl.protocol !== "https:" && !developmentHttp) {
+    throw new Error(
+      "The Vooma API must use HTTPS. HTTP is allowed only for localhost or private network addresses during development.",
+    );
   }
   return baseUrl.href.replace(/\/$/, "");
 }
 
 async function post<T>(path: string, body: unknown): Promise<T> {
+  const url = apiBaseUrl() + path;
   let response: Response;
   try {
-    response = await fetch(apiBaseUrl() + path, {
+    response = await fetch(url, {
       method: "POST",
       headers: {
         Accept: "application/json",

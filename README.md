@@ -12,6 +12,8 @@ Use Node.js 22.12+ (Node 24 recommended) and npm.
 
 Open http://localhost:5173. The API should be running at the URL in `.env.local`; the default is http://localhost:4000.
 
+To use the API on the network server, set `VITE_API_BASE_URL=http://192.168.8.80:4000` in `.env` or `.env.local`. If both files exist, `.env.local` takes precedence. Vite reloads environment changes; refresh the browser afterward. Development allows HTTP for localhost and private network IP addresses. Production requires an HTTPS API URL.
+
 ## Admin sign-in
 
 Admin sign-in is handled by Vooma using email one-time codes. No identity-provider account, client ID, or client secret is needed. The API's **ADMIN_EMAILS** allowlist controls who can sign in. Codes expire after five minutes, and successful verification creates a one-hour admin session held in browser memory.
