@@ -16,6 +16,7 @@ import {
   passengers,
   trips,
   type Driver,
+  type Vehicle,
 } from "./data";
 import { adminCss } from "./styles";
 import { AdminLogin } from "./AdminLogin";
@@ -163,6 +164,66 @@ function Person({ name, sub }: { name: string; sub: string }) {
         <small>{sub}</small>
       </span>
     </span>
+  );
+}
+function VehicleDetails({ vehicle }: { vehicle: Vehicle }) {
+  const groups = [
+    {
+      title: "Vehicle specifications",
+      fields: [
+        ["Make", vehicle.make],
+        ["Model", vehicle.model],
+        ["Year", vehicle.year],
+        ["Color", vehicle.color],
+        ["Vehicle type", vehicle.type],
+        ["Seats (including driver)", vehicle.seats],
+        ["Fuel type", vehicle.fuel],
+        ["Transmission", vehicle.transmission],
+        ["VIN / chassis number", vehicle.chassisNumber],
+      ],
+    },
+    {
+      title: "Registration details",
+      fields: [
+        ["Vehicle ID", vehicle.id],
+        ["License plate", vehicle.plate],
+        ["Registration number", vehicle.registrationNumber],
+        ["Registered owner", vehicle.registeredOwner],
+        ["Assigned driver", vehicle.driver],
+        ["Driver ID", vehicle.driverId],
+        ["Registration city", vehicle.registrationCity],
+        ["Registration date", vehicle.registrationDate],
+        ["Submitted for review", vehicle.submitted],
+      ],
+    },
+    {
+      title: "Insurance and inspection",
+      fields: [
+        ["Insurance provider", vehicle.insuranceProvider],
+        ["Policy number", vehicle.insurancePolicy],
+        ["Insurance expiry", vehicle.insuranceExpiry],
+        ["Inspection certificate", vehicle.inspectionNumber],
+        ["Inspection date", vehicle.inspectionDate],
+        ["Inspection expiry", vehicle.inspectionExpiry],
+      ],
+    },
+  ];
+  return (
+    <div className="vehicle-details">
+      {groups.map((group) => (
+        <section key={group.title}>
+          <h3>{group.title}</h3>
+          <dl className="vehicle-detail-fields">
+            {group.fields.map(([label, value]) => (
+              <div key={label}>
+                <dt>{label}</dt>
+                <dd>{value ?? "Not provided"}</dd>
+              </div>
+            ))}
+          </dl>
+        </section>
+      ))}
+    </div>
   );
 }
 function Panel({
@@ -313,6 +374,9 @@ function AdminWorkspace({ onSignOut }: { onSignOut: () => void }) {
   const match = (value: unknown) =>
     JSON.stringify(value).toLowerCase().includes(query.toLowerCase());
   const driver = selected ? drivers.find((d) => d.id === selected.id)! : null;
+  const driverVehicles = driver
+    ? vehicles.filter((vehicle) => vehicle.driverId === driver.id)
+    : [];
   const visibleDrivers = drivers.filter(
     (d) =>
       match(d) &&
@@ -1131,18 +1195,39 @@ function AdminWorkspace({ onSignOut }: { onSignOut: () => void }) {
                   </Panel>
                 )}
                 {driverTab === "Vehicle" && (
-                  <Panel title="Registered vehicle">
-                    <div className="panel-padding">
-                      <h2>{driver.vehicle}</h2>
-                      <p>{driver.plate}</p>
-                      <p>Driver: {driver.name}</p>
-                      <button
-                        className="secondary"
-                        onClick={() => navigate("Vehicles")}
-                      >
-                        Open vehicle verification
-                        <Icon name="Arrow" size={16} />
-                      </button>
+                  <Panel title={`Registered vehicles (${driverVehicles.length})`}>
+                    <p className="panel-note">
+                      Sample registration records. Document files are not available
+                      in this demo.
+                    </p>
+                    <div className="registered-vehicles">
+                      {driverVehicles.map((vehicle) => (
+                        <article className="registered-vehicle" key={vehicle.id}>
+                          <header className="registered-vehicle-heading">
+                            <VehicleArt name={vehicle.name} />
+                            <div>
+                              <h3>{vehicle.name}</h3>
+                              <p>{vehicle.plate}</p>
+                            </div>
+                            <Badge>{vehicle.status}</Badge>
+                          </header>
+                          <VehicleDetails vehicle={vehicle} />
+                          <button
+                            className="secondary"
+                            onClick={() =>
+                              setDetail({ kind: "vehicle", id: vehicle.id })
+                            }
+                          >
+                            Review vehicle registration
+                            <Icon name="Arrow" size={16} />
+                          </button>
+                        </article>
+                      ))}
+                      {!driverVehicles.length && (
+                        <div className="empty">
+                          No registered vehicles for this driver.
+                        </div>
+                      )}
                     </div>
                   </Panel>
                 )}
@@ -1571,10 +1656,10 @@ function AdminWorkspace({ onSignOut }: { onSignOut: () => void }) {
                     {v.plate} · {v.driver}
                   </p>
                   <Badge>{v.status}</Badge>
+                  <VehicleDetails vehicle={v} />
                   <div className="dialog-info">
-                    Registration, insurance and inspection records are
-                    placeholders in this screen preview. Live document viewing
-                    is not connected.
+                    Sample registration records. Document files are not available
+                    in this demo.
                   </div>
                   <div className="dialog-actions">
                     {["Approved", "Rejected"].map((status) => (

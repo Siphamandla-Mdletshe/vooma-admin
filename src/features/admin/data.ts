@@ -112,15 +112,41 @@ export const trips = Array.from({ length: 12480 }, (_, i) => {
 });
 export const initialVehicles = Array.from({ length: 5578 }, (_, i) => {
   const driver = initialDrivers[i % initialDrivers.length];
+  const [make, ...model] = driver.vehicle.split(" ");
+  const isMotorcycle = make === "Yamaha";
   return {
     id: `VH-${1001 + i}`,
+    driverId: driver.id,
     driver: driver.name,
     name: driver.vehicle,
-    plate: driver.plate,
+    plate:
+      i < initialDrivers.length
+        ? driver.plate
+        : `CE ${String(100000 + i).slice(0, 3)} ${String(100000 + i).slice(3)}`,
+    make,
+    model: model.join(" "),
+    year: 2020 + (i % 4),
+    color: isMotorcycle ? "Black / Silver" : ["White", "Silver", "Blue"][i % 3],
+    type: isMotorcycle ? "Motorcycle" : "Car",
+    seats: isMotorcycle ? 2 : 5,
+    fuel: "Petrol",
+    transmission: isMotorcycle || i % 2 ? "Manual" : "Automatic",
+    chassisNumber: `DEMO-CHASSIS-${1001 + i}`,
+    registeredOwner: driver.name,
+    registrationNumber: `DEMO-REG-${1001 + i}`,
+    registrationCity: driver.city,
+    registrationDate: `${8 + (i % 15)} Jan 2025`,
+    insuranceProvider: "Demo Insurance",
+    insurancePolicy: `DEMO-POL-${1001 + i}`,
+    insuranceExpiry: "31 Dec 2025",
+    inspectionNumber: `DEMO-INSP-${1001 + i}`,
+    inspectionDate: "05 Jan 2025",
+    inspectionExpiry: "05 Jan 2026",
     status: i < 96 ? "Pending review" : i < 5516 ? "Approved" : "Rejected",
     submitted: `${30 - (i % 3)} Jan 2025`,
   };
 });
+export type Vehicle = (typeof initialVehicles)[number];
 const ticketSamples = [
   ["Unable to start trip", "Olivier Mvondo", "Driver"],
   ["Payment not received", "Aminata Bello", "Passenger"],
