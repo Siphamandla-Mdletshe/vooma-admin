@@ -13,3 +13,24 @@ input,
 select {
   font: inherit;
 }
+
+.workspace-auth-notice {
+  display: grid;
+  gap: 3px;
+  margin: 0 32px;
+  padding: 12px 16px;
+  border: 1px solid #f1d19a;
+  border-radius: 10px;
+  background: #fff8eb;
+  color: #68410c;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.workspace-auth-notice strong {
+  font-weight: 750;
+}
+@media (max-width: 700px) {
+  .workspace-auth-notice {
+    margin: 0 16px;
+  }
+}

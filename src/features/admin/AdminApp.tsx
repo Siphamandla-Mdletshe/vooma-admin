@@ -19,6 +19,7 @@ import {
 } from "./data";
 import { adminCss } from "./styles";
 import { AdminLogin } from "./AdminLogin";
+import { logoutAdmin, type AdminAuthResult, type AdminSession } from "./auth";
 import { DashboardCharts } from "./DashboardCharts";
 
 const pages = [
@@ -230,15 +231,29 @@ function readPage(): Page {
 }
 
 export default function AdminApp() {
-  const [preview, setPreview] = useState(false);
-  return preview ? (
-    <AdminWorkspace onSignOut={() => setPreview(false)} />
-  ) : (
-    <AdminLogin onPreview={() => setPreview(true)} />
-  );
+  const [auth, setAuth] = useState<AdminAuthResult | null>(null);
+
+  if (auth) {
+    return (
+      <AdminWorkspace
+        session={auth.session}
+        onSignOut={() => {
+          void logoutAdmin(auth.accessToken);
+          setAuth(null);
+        }}
+      />
+    );
+  }
+  return <AdminLogin onAuthenticated={setAuth} />;
 }
 
-function AdminWorkspace({ onSignOut }: { onSignOut: () => void }) {
+function AdminWorkspace({
+  session,
+  onSignOut,
+}: {
+  session: AdminSession;
+  onSignOut: () => void;
+}) {
   const scrollContainer = useRef<HTMLDivElement>(null);
   const [page, setPage] = useState<Page>(readPage);
   const [drivers, setDrivers] = useState(initialDrivers);
@@ -264,7 +279,7 @@ function AdminWorkspace({ onSignOut }: { onSignOut: () => void }) {
     {},
   );
   const [toast, setToast] = useState("");
-  const [name, setName] = useState("Admin User");
+  const [name, setName] = useState(session.subject);
   const [email, setEmail] = useState("admin@example.test");
   useEffect(() => {
     const listener = () => {
@@ -777,7 +792,7 @@ function AdminWorkspace({ onSignOut }: { onSignOut: () => void }) {
               </button>
               {userMenu && (
                 <div className="user-menu">
-                  <small>Administrator · Demo workspace</small>
+                  <small>Admin access · Sample data</small>
                   <button onClick={() => navigate("Settings")}>
                     <Icon name="Settings" size={17} />
                     Account settings
@@ -791,6 +806,13 @@ function AdminWorkspace({ onSignOut }: { onSignOut: () => void }) {
             </div>
           </div>
         </header>
+        <div className="workspace-auth-notice" role="status">
+          <strong>Admin session verified · Sample data only</strong>
+          <span>
+            Signed in as {session.subject}. Driver, support, and other actions
+            on these screens do not reach the API yet.
+          </span>
+        </div>
         <main
           id="admin-main"
           className={`page-${page.toLowerCase()} ${driver ? "page-driver-detail" : ""}`}
@@ -1379,7 +1401,8 @@ function AdminWorkspace({ onSignOut }: { onSignOut: () => void }) {
                 </div>
                 <p>
                   Changes apply to this preview session. Administrator accounts
-                  and permissions will be connected to the backend.
+                  are approved through the Vooma API email allowlist. This
+                  setting changes only the local preview.
                 </p>
                 <button className="primary" type="submit">
                   Save preferences

@@ -1,8 +1,14 @@
-import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useState, type CSSProperties, type FormEvent } from "react";
 
 import palette from "../../brand/tokens.json";
 import { VoomaMark } from "../../brand/VoomaMark";
 import { loginCss } from "./loginStyles";
+import {
+  requestAdminOtp,
+  verifyAdminOtp,
+  type AdminAuthResult,
+  type AdminOtpChallenge,
+} from "./auth";
 
 function ArrowIcon() {
   return (
@@ -23,15 +29,85 @@ function ArrowIcon() {
   );
 }
 
-export function AdminLogin({ onPreview }: { onPreview: () => void }) {
+interface AdminLoginProps {
+  onAuthenticated: (result: AdminAuthResult) => void;
+}
+
+export function AdminLogin({ onAuthenticated }: AdminLoginProps) {
   const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [visible, setVisible] = useState(false);
-  const [message, setMessage] = useState("");
+  const [code, setCode] = useState("");
+  const [challenge, setChallenge] = useState<AdminOtpChallenge | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [localMessage, setLocalMessage] = useState("");
+  const [resendWait, setResendWait] = useState(0);
 
   useEffect(() => {
     document.title = "Sign in | Vooma Admin";
   }, []);
+
+  useEffect(() => {
+    if (!challenge) {
+      setResendWait(0);
+      return;
+    }
+    const updateWait = () =>
+      setResendWait(
+        Math.max(0, Math.ceil((challenge.resendAt - Date.now()) / 1000)),
+      );
+    updateWait();
+    const interval = window.setInterval(updateWait, 1000);
+    return () => window.clearInterval(interval);
+  }, [challenge]);
+
+  async function requestCode(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    setLocalMessage("");
+    try {
+      const result = await requestAdminOtp(email);
+      setChallenge(result);
+    } catch (error) {
+      setLocalMessage(
+        error instanceof Error
+          ? error.message
+          : "Unable to request a sign-in code.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function resendCode() {
+    setBusy(true);
+    setLocalMessage("");
+    try {
+      const result = await requestAdminOtp(email);
+      setChallenge(result);
+      setCode("");
+    } catch (error) {
+      setLocalMessage(
+        error instanceof Error ? error.message : "Unable to resend the code.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function verifyCode(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!challenge) return;
+    setBusy(true);
+    setLocalMessage("");
+    try {
+      onAuthenticated(await verifyAdminOtp(challenge.challengeId, code));
+    } catch (error) {
+      setLocalMessage(
+        error instanceof Error ? error.message : "Unable to verify the code.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
     <div
@@ -70,7 +146,7 @@ export function AdminLogin({ onPreview }: { onPreview: () => void }) {
         </div>
         <img
           className="login-illustration"
-          src={`${import.meta.env.BASE_URL}images/admin-city.webp`}
+          src={import.meta.env.BASE_URL + "images/admin-city.webp"}
           alt=""
           width="1254"
           height="1254"
@@ -81,82 +157,86 @@ export function AdminLogin({ onPreview }: { onPreview: () => void }) {
         <div className="login-card">
           <span className="login-eyebrow">ADMINISTRATOR ACCESS</span>
           <h1>Welcome back.</h1>
-          <p className="login-subtitle">Sign in to your Vooma admin account.</p>
-          <form
-            onSubmit={(event) => {
-              event.preventDefault();
-              setMessage(
-                "Admin sign-in is not connected yet. You can explore the dashboard preview below using sample data.",
-              );
-            }}
-          >
-            <label htmlFor="admin-email">Email address</label>
-            <div className="login-input-wrap">
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <rect x="3" y="5" width="18" height="14" rx="2" />
-                <path d="m4 7 8 6 8-6" />
-              </svg>
+          <p className="login-subtitle">Sign in with your Vooma admin email.</p>
+          {localMessage && (
+            <p className="login-feedback" role="alert">
+              {localMessage}
+            </p>
+          )}
+          {!challenge ? (
+            <form onSubmit={(event) => void requestCode(event)}>
+              <label className="login-field-label" htmlFor="admin-email">
+                Admin email
+              </label>
               <input
                 id="admin-email"
-                name="email"
                 type="email"
-                autoComplete="username"
-                placeholder="you@company.com"
+                autoComplete="email"
+                maxLength={254}
                 required
                 value={email}
-                onChange={(event) => {
-                  setEmail(event.target.value);
-                  setMessage("");
-                }}
+                onChange={(event) => setEmail(event.target.value)}
+                placeholder="you@vooma.co.za"
               />
-            </div>
-            <label htmlFor="admin-password">Password</label>
-            <div className="login-password">
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <rect x="4" y="10" width="16" height="11" rx="2" />
-                <path d="M8 10V7a4 4 0 1 1 8 0v3" />
-              </svg>
+              <button className="login-submit" type="submit" disabled={busy}>
+                {busy ? "Sending code…" : "Send sign-in code"}
+                <ArrowIcon />
+              </button>
+            </form>
+          ) : (
+            <form onSubmit={(event) => void verifyCode(event)}>
+              <label className="login-field-label" htmlFor="admin-code">
+                Six-digit code sent to {email}
+              </label>
               <input
-                id="admin-password"
-                name="password"
-                type={visible ? "text" : "password"}
-                autoComplete="current-password"
-                placeholder="Enter your password"
+                id="admin-code"
+                type="text"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                pattern="[0-9]{6}"
+                maxLength={6}
                 required
-                value={password}
-                onChange={(event) => {
-                  setPassword(event.target.value);
-                  setMessage("");
-                }}
+                value={code}
+                onChange={(event) =>
+                  setCode(event.target.value.replace(/\D/g, "").slice(0, 6))
+                }
+                placeholder="000000"
               />
               <button
-                type="button"
-                aria-label={visible ? "Hide password" : "Show password"}
-                aria-pressed={visible}
-                onClick={() => setVisible(!visible)}
+                className="login-submit"
+                type="submit"
+                disabled={busy || code.length !== 6}
               >
-                {visible ? "Hide" : "Show"}
+                {busy ? "Verifying…" : "Verify and sign in"}
+                <ArrowIcon />
               </button>
-            </div>
-            {message && (
-              <p className="login-feedback" role="alert">
-                {message}
-              </p>
-            )}
-            <button className="login-submit" type="submit">
-              Sign in <ArrowIcon />
-            </button>
-          </form>
+              <button
+                className="login-change-email"
+                type="button"
+                disabled={busy || resendWait > 0}
+                onClick={() => void resendCode()}
+              >
+                {resendWait > 0
+                  ? `Send another code in ${resendWait}s`
+                  : "Send another code"}
+              </button>
+              <button
+                className="login-change-email"
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  setChallenge(null);
+                  setCode("");
+                  setLocalMessage("");
+                }}
+              >
+                Use a different email
+              </button>
+            </form>
+          )}
           <p className="login-access-note">
-            Need access? Contact your Vooma administrator.
+            Admin access is limited to email addresses approved by Vooma.
           </p>
-          <div className="login-preview">
-            <span className="login-preview-label">SCREEN PREVIEW</span>
-            <p>Explore the admin screens with sample data.</p>
-            <button type="button" onClick={onPreview}>
-              Explore demo dashboard <ArrowIcon />
-            </button>
-          </div>
         </div>
       </main>
     </div>
