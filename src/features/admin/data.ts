@@ -1,4 +1,5 @@
 export type Driver = {
+  live?: boolean;
   id: string;
   name: string;
   email: string;
@@ -6,10 +7,26 @@ export type Driver = {
   city: string;
   vehicle: string;
   plate: string;
+  registeredVehicleId: string | null;
   status: string;
   joined: string;
   trips: number;
   rating: string;
+};
+
+export type Vehicle = {
+  live?: boolean;
+  id: string;
+  driverId: string;
+  driver: string;
+  name: string;
+  plate: string;
+  make: string;
+  model: string;
+  year: number | null;
+  colour: string;
+  status: string;
+  submitted: string;
 };
 
 // Deterministic demo records keep the reference totals, filters and pagination consistent.
@@ -54,6 +71,7 @@ export const initialDrivers: Driver[] = Array.from(
       i % 4
     ],
     plate: ["CA 123 456", "LT 456 789", "MT 321 654", "CE 987 654"][i % 4],
+    registeredVehicleId: `VH-${1001 + i}`,
     status:
       i === 1 || (i >= 4 && i < 187)
         ? "Pending review"
@@ -110,17 +128,27 @@ export const trips = Array.from({ length: 12480 }, (_, i) => {
     dropoff: ["Melen, Yaoundé", "Centre Ville", "Etoudi"][i % 3],
   };
 });
-export const initialVehicles = Array.from({ length: 5578 }, (_, i) => {
-  const driver = initialDrivers[i % initialDrivers.length];
-  return {
-    id: `VH-${1001 + i}`,
-    driver: driver.name,
-    name: driver.vehicle,
-    plate: driver.plate,
-    status: i < 96 ? "Pending review" : i < 5516 ? "Approved" : "Rejected",
-    submitted: `${30 - (i % 3)} Jan 2025`,
-  };
-});
+export const initialVehicles: Vehicle[] = Array.from(
+  { length: 5578 },
+  (_, i) => {
+    const driverIndex = i % initialDrivers.length;
+    const driver = initialDrivers[driverIndex];
+    const [make, ...model] = driver.vehicle.split(" ");
+    return {
+      id: `VH-${1001 + i}`,
+      driverId: driver.id,
+      driver: driver.name,
+      name: driver.vehicle,
+      plate: driver.plate,
+      make,
+      model: model.join(" "),
+      year: [2021, 2020, 2022, 2019][driverIndex % 4],
+      colour: ["White", "Silver", "Black", "Blue"][driverIndex % 4],
+      status: i < 96 ? "Pending review" : i < 5516 ? "Approved" : "Rejected",
+      submitted: `${30 - (i % 3)} Jan 2025`,
+    };
+  },
+);
 const ticketSamples = [
   ["Unable to start trip", "Olivier Mvondo", "Driver"],
   ["Payment not received", "Aminata Bello", "Passenger"],

@@ -20,7 +20,15 @@ Admin sign-in is handled by Vooma using email one-time codes. No identity-provid
 
 For a local end-to-end setup, run `npm run local:init` and `npm run local:up` in the Vooma API folder, then start this app with `npm run dev`. Enter **admin@example.test** and retrieve the code from **http://localhost:8025** (Mailpit). The local stack adds that synthetic address to **ADMIN_EMAILS** and routes email to Mailpit.
 
-The current API integration covers authentication only. After a successful sign-in, the dashboard explicitly identifies its records and actions as sample data; driver, support, and other operational endpoints still need to be connected. **Explore demo dashboard** remains available without signing in and uses sample data only.
+Drivers and Vehicles load real registration records from the configured API. Open **Drivers → select a driver → Documents** to see the identity photo, licence images, professional permit, vehicle registration, insurance, and any optional certificates uploaded during registration. Clean-scanned images and PDFs can be previewed or downloaded using the admin session; missing files and pending scans are shown explicitly. **Refresh registrations** and **Refresh documents** fetch the latest submissions.
+
+The driver app and admin app must point to the same API/database. For a driver app on a phone, use this PC's current LAN address on port 4000; the admin browser on this PC can use `http://localhost:4000`. Restart Expo after changing `EXPO_PUBLIC_API_BASE_URL`. Files selected only in registration preview mode are not uploaded. Trips, payments, support, and reports still use sample data; document viewing does not approve a driver.
+
+## Support workspace
+
+Open **Support** and select a ticket number or subject to view the conversation, customer details, related trip, device information, and attachments. **Reply to customer** opens conversation, internal-note, and activity tabs with draft saving, formatting, file attachments, suggested actions, and quick responses. **Assign** and **Escalate** open a drawer for agent/team routing, priority, tags, due dates, and an internal note. **Resolve ticket** records the resolution, customer communication, optional compensation, and survey preference, then updates the ticket list.
+
+Support is a session-only preview using sample tickets. Saved drafts, replies, notes, assignment changes, attachments, and resolutions survive navigation within the signed-in session but reset on refresh or sign-out. Files remain in browser memory; no support messages, agent notifications, surveys, or payments are sent to external services.
 
 ## Commands
 

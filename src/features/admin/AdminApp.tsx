@@ -11,16 +11,21 @@ import { VoomaMark } from "../../brand/VoomaMark";
 import {
   initialDrivers,
   initialTickets,
-  initialVehicles,
   money,
   passengers,
   trips,
   type Driver,
+  type Vehicle,
 } from "./data";
 import { adminCss } from "./styles";
 import { AdminLogin } from "./AdminLogin";
 import { logoutAdmin, type AdminAuthResult, type AdminSession } from "./auth";
 import { DashboardCharts } from "./DashboardCharts";
+import { VehicleDetails } from "./VehicleDetails";
+import { VerificationDocuments } from "./VerificationDocuments";
+import { loadRegistrations } from "./registrations";
+import { SupportTicketView } from "./SupportTicketView";
+import { createSupportCase, type SupportCase } from "./supportData";
 
 const pages = [
   "Dashboard",
@@ -237,6 +242,7 @@ export default function AdminApp() {
     return (
       <AdminWorkspace
         session={auth.session}
+        accessToken={auth.accessToken}
         onSignOut={() => {
           void logoutAdmin(auth.accessToken);
           setAuth(null);
@@ -249,20 +255,27 @@ export default function AdminApp() {
 
 function AdminWorkspace({
   session,
+  accessToken,
   onSignOut,
 }: {
   session: AdminSession;
+  accessToken: string;
   onSignOut: () => void;
 }) {
   const scrollContainer = useRef<HTMLDivElement>(null);
   const [page, setPage] = useState<Page>(readPage);
-  const [drivers, setDrivers] = useState(initialDrivers);
-  const [vehicles, setVehicles] = useState(initialVehicles);
+  const [drivers, setDrivers] = useState<Driver[]>([]);
+  const [vehicles, setVehicles] = useState<Vehicle[]>([]);
+  const [registrationLoading, setRegistrationLoading] = useState(true);
+  const [registrationError, setRegistrationError] = useState("");
+  const [registrationRevision, setRegistrationRevision] = useState(0);
   const [tickets, setTickets] = useState(initialTickets);
-  const [query, setQuery] = useState("");
-  const [tab, setTab] = useState(
-    readPage() === "Vehicles" ? "Pending review" : "All",
+  const [supportTicketId, setSupportTicketId] = useState<string | null>(null);
+  const [supportCases, setSupportCases] = useState<Record<string, SupportCase>>(
+    {},
   );
+  const [query, setQuery] = useState("");
+  const [tab, setTab] = useState("All");
   const [city, setCity] = useState("All cities");
   const [filterOpen, setFilterOpen] = useState(false);
   const [current, setCurrent] = useState(1);
@@ -282,11 +295,35 @@ function AdminWorkspace({
   const [name, setName] = useState(session.subject);
   const [email, setEmail] = useState("admin@example.test");
   useEffect(() => {
+    const controller = new AbortController();
+    setRegistrationLoading(true);
+    setRegistrationError("");
+    loadRegistrations(accessToken, controller.signal)
+      .then((records) => {
+        if (controller.signal.aborted) return;
+        setDrivers(records.drivers);
+        setVehicles(records.vehicles);
+      })
+      .catch((reason: unknown) => {
+        if (!controller.signal.aborted)
+          setRegistrationError(
+            reason instanceof Error
+              ? reason.message
+              : "Unable to load registrations.",
+          );
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setRegistrationLoading(false);
+      });
+    return () => controller.abort();
+  }, [accessToken, registrationRevision]);
+  useEffect(() => {
     const listener = () => {
       setPage(readPage());
       setSelected(null);
+      setSupportTicketId(null);
       setQuery("");
-      setTab(readPage() === "Vehicles" ? "Pending review" : "All");
+      setTab("All");
       setCity("All cities");
       setFilterOpen(false);
       setCurrent(1);
@@ -295,9 +332,13 @@ function AdminWorkspace({
     return () => window.removeEventListener("hashchange", listener);
   }, []);
   useEffect(() => {
-    document.title = selected ? selected.name : page;
+    document.title = selected
+      ? selected.name
+      : supportTicketId
+        ? `Ticket ${supportTicketId}`
+        : page;
     scrollContainer.current?.scrollTo({ top: 0 });
-  }, [page, selected]);
+  }, [page, selected, supportTicketId]);
   useEffect(() => {
     if (!toast) return;
     const timer = setTimeout(() => setToast(""), 4000);
@@ -317,17 +358,36 @@ function AdminWorkspace({
     setPage(next);
     window.history.pushState(null, "", `#${next.toLowerCase()}`);
     setQuery("");
-    setTab(next === "Vehicles" ? "Pending review" : "All");
+    setTab("All");
     setFilterOpen(false);
     setUserMenu(false);
     setCity("All cities");
     setSelected(null);
+    setSupportTicketId(null);
     setCurrent(1);
     setMobileNav(false);
   }
+  function openSupportTicket(id: string) {
+    const ticket = tickets.find((item) => item.id === id);
+    if (!ticket) return;
+    setSupportCases((previous) =>
+      previous[id]
+        ? previous
+        : { ...previous, [id]: createSupportCase(ticket) },
+    );
+    setSupportTicketId(id);
+  }
+  const supportTicket = tickets.find((ticket) => ticket.id === supportTicketId);
   const match = (value: unknown) =>
     JSON.stringify(value).toLowerCase().includes(query.toLowerCase());
   const driver = selected ? drivers.find((d) => d.id === selected.id)! : null;
+  const registeredVehicle = driver
+    ? vehicles.find(
+        (vehicle) =>
+          vehicle.id === driver.registeredVehicleId &&
+          vehicle.driverId === driver.id,
+      )
+    : undefined;
   const visibleDrivers = drivers.filter(
     (d) =>
       match(d) &&
@@ -807,10 +867,11 @@ function AdminWorkspace({
           </div>
         </header>
         <div className="workspace-auth-notice" role="status">
-          <strong>Admin session verified · Sample data only</strong>
+          <strong>Admin session verified</strong>
           <span>
-            Signed in as {session.subject}. Driver, support, and other actions
-            on these screens do not reach the API yet.
+            Signed in as {session.subject}. Driver registrations and documents
+            are live. Trips, payments, support, and reports still contain sample
+            data.
           </span>
         </div>
         <main
@@ -818,6 +879,7 @@ function AdminWorkspace({
           className={`page-${page.toLowerCase()} ${driver ? "page-driver-detail" : ""}`}
         >
           {!selected &&
+            !supportTicketId &&
             ["Dashboard", "Trips", "Reports", "Support"].includes(page) && (
               <div className="page-heading">
                 <div className="heading-actions">
@@ -865,8 +927,33 @@ function AdminWorkspace({
           )}
           {page === "Drivers" && !driver && (
             <section className="panel records">
+              <div className="verification-toolbar">
+                <p>Driver registrations</p>
+                <button
+                  className="secondary"
+                  disabled={registrationLoading}
+                  onClick={() => setRegistrationRevision((value) => value + 1)}
+                >
+                  Refresh registrations
+                </button>
+              </div>
+              {registrationLoading && (
+                <p role="status">Loading registrations…</p>
+              )}
+              {registrationError && (
+                <p className="registration-error" role="alert">
+                  {registrationError}
+                </p>
+              )}
               {tabs(
-                ["All", "Pending review", "Approved", "Suspended"],
+                [
+                  "All",
+                  "Pending review",
+                  "Under review",
+                  "Approved",
+                  "Rejected",
+                  "Suspended",
+                ],
                 drivers,
               )}
               <div className="toolbar">
@@ -889,8 +976,11 @@ function AdminWorkspace({
                     }}
                   >
                     <option>All cities</option>
-                    <option>Yaoundé</option>
-                    <option>Douala</option>
+                    {[...new Set(drivers.map((record) => record.city))]
+                      .sort()
+                      .map((value) => (
+                        <option key={value}>{value}</option>
+                      ))}
                   </select>
                 )}
               </div>
@@ -991,7 +1081,7 @@ function AdminWorkspace({
                   {[
                     ["Phone", driver.phone],
                     ["Mail", driver.email],
-                    ["Pin", `${driver.city}, Centre`],
+                    ["Pin", driver.city],
                     ["Calendar", `Joined: ${driver.joined}`],
                     ["Star", `${driver.rating} (${driver.trips} trips)`],
                   ].map(([icon, value]) => (
@@ -1004,28 +1094,30 @@ function AdminWorkspace({
                     </div>
                   ))}
                 </dl>
-                <div className="profile-actions">
-                  <button
-                    className="danger"
-                    onClick={() =>
-                      setDetail({ kind: "driverStatus", id: driver.id })
-                    }
-                  >
-                    {driver.status === "Suspended"
-                      ? "Reactivate"
-                      : driver.status === "Pending review"
-                        ? "Review"
-                        : "Suspend"}
-                  </button>
-                  <button
-                    className="primary"
-                    onClick={() =>
-                      setDetail({ kind: "message", id: driver.id })
-                    }
-                  >
-                    Send Message
-                  </button>
-                </div>
+                {!driver.live && (
+                  <div className="profile-actions">
+                    <button
+                      className="danger"
+                      onClick={() =>
+                        setDetail({ kind: "driverStatus", id: driver.id })
+                      }
+                    >
+                      {driver.status === "Suspended"
+                        ? "Reactivate"
+                        : driver.status === "Pending review"
+                          ? "Review"
+                          : "Suspend"}
+                    </button>
+                    <button
+                      className="primary"
+                      onClick={() =>
+                        setDetail({ kind: "message", id: driver.id })
+                      }
+                    >
+                      Send Message
+                    </button>
+                  </div>
+                )}
               </aside>
               <div className="driver-main">
                 <div
@@ -1033,13 +1125,10 @@ function AdminWorkspace({
                   role="tablist"
                   aria-label="Driver details"
                 >
-                  {[
-                    "Overview",
-                    "Documents",
-                    "Vehicle",
-                    "Trips",
-                    "Earnings",
-                  ].map((t) => (
+                  {(driver.live
+                    ? ["Overview", "Documents", "Vehicle"]
+                    : ["Overview", "Documents", "Vehicle", "Trips", "Earnings"]
+                  ).map((t) => (
                     <button
                       key={t}
                       role="tab"
@@ -1051,121 +1140,126 @@ function AdminWorkspace({
                     </button>
                   ))}
                 </div>
-                {driverTab === "Overview" && (
-                  <>
-                    <div className="stats-grid mini profile-stats">
-                      {[
-                        [
-                          "Vehicles",
-                          String(driver.trips),
-                          "Total Trips",
-                          "blue",
-                        ],
-                        ["Star", driver.rating, "Rating", "orange"],
-                        [
-                          "Layers",
-                          money(
-                            driver.id === "DR-001234"
-                              ? 1250000
-                              : driver.trips * 4800,
-                          ),
-                          "Total Earnings",
-                          "green",
-                        ],
-                      ].map(([icon, value, label, color]) => (
-                        <div className="stat" key={label}>
-                          <span className={`stat-icon ${color}`}>
-                            <Icon name={icon} size={24} />
-                          </span>
-                          <div className="stat-content">
-                            <strong>{value}</strong>
-                            <span>{label}</span>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                    <Panel title="Recent Trips">
-                      <Table
-                        headers={[
-                          "Date & Time",
-                          "Pick-up",
-                          "Drop-off",
-                          "Fare",
-                          "Status",
-                        ]}
-                        rows={trips
-                          .filter((t) => t.driver === driver.name)
-                          .slice(0, 3)
-                          .map((t) => [
-                            t.date,
-                            t.pickup,
-                            t.dropoff,
-                            money(t.fare),
-                            <Badge key="status">{t.status}</Badge>,
-                          ])}
-                      />
-                      <div className="panel-foot">
+                {driverTab === "Overview" &&
+                  (driver.live ? (
+                    <Panel title="Driver registration">
+                      <div className="panel-padding">
+                        <p>
+                          Application status: <strong>{driver.status}</strong>
+                        </p>
+                        <p>
+                          Open the submitted documents to verify this driver’s
+                          registration.
+                        </p>
                         <button
-                          className="text-link"
-                          onClick={() => setDriverTab("Trips")}
+                          className="primary"
+                          onClick={() => setDriverTab("Documents")}
                         >
-                          View all trips
-                          <Icon name="Arrow" size={16} />
+                          View verification documents
                         </button>
                       </div>
                     </Panel>
-                  </>
-                )}
+                  ) : (
+                    <>
+                      <div className="stats-grid mini profile-stats">
+                        {[
+                          [
+                            "Vehicles",
+                            String(driver.trips),
+                            "Total Trips",
+                            "blue",
+                          ],
+                          ["Star", driver.rating, "Rating", "orange"],
+                          [
+                            "Layers",
+                            money(
+                              driver.id === "DR-001234"
+                                ? 1250000
+                                : driver.trips * 4800,
+                            ),
+                            "Total Earnings",
+                            "green",
+                          ],
+                        ].map(([icon, value, label, color]) => (
+                          <div className="stat" key={label}>
+                            <span className={`stat-icon ${color}`}>
+                              <Icon name={icon} size={24} />
+                            </span>
+                            <div className="stat-content">
+                              <strong>{value}</strong>
+                              <span>{label}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      <Panel title="Recent Trips">
+                        <Table
+                          headers={[
+                            "Date & Time",
+                            "Pick-up",
+                            "Drop-off",
+                            "Fare",
+                            "Status",
+                          ]}
+                          rows={trips
+                            .filter((t) => t.driver === driver.name)
+                            .slice(0, 3)
+                            .map((t) => [
+                              t.date,
+                              t.pickup,
+                              t.dropoff,
+                              money(t.fare),
+                              <Badge key="status">{t.status}</Badge>,
+                            ])}
+                        />
+                        <div className="panel-foot">
+                          <button
+                            className="text-link"
+                            onClick={() => setDriverTab("Trips")}
+                          >
+                            View all trips
+                            <Icon name="Arrow" size={16} />
+                          </button>
+                        </div>
+                      </Panel>
+                    </>
+                  ))}
                 {driverTab === "Documents" && (
                   <Panel title="Verification documents">
-                    <p className="panel-note">
-                      Sample document records. No personal documents are stored
-                      in this preview.
-                    </p>
-                    {[
-                      "Identity document",
-                      "Driver’s licence",
-                      "Professional driving permit",
-                      "Driver photo",
-                    ].map((d) => (
-                      <div className="document-row" key={d}>
-                        <span className="document-icon">
-                          <Icon name="Reports" />
-                        </span>
-                        <strong>{d}</strong>
-                        <Badge>
-                          {driver.status === "Approved"
-                            ? "Approved"
-                            : "Pending review"}
-                        </Badge>
-                      </div>
-                    ))}
-                    <div className="panel-padding">
-                      <button
-                        className="primary"
-                        onClick={() =>
-                          setDetail({ kind: "driverStatus", id: driver.id })
-                        }
-                      >
-                        Review application
-                      </button>
-                    </div>
+                    <VerificationDocuments
+                      key={driver.id}
+                      driverId={driver.id}
+                      accessToken={accessToken}
+                    />
                   </Panel>
                 )}
                 {driverTab === "Vehicle" && (
                   <Panel title="Registered vehicle">
-                    <div className="panel-padding">
-                      <h2>{driver.vehicle}</h2>
-                      <p>{driver.plate}</p>
-                      <p>Driver: {driver.name}</p>
-                      <button
-                        className="secondary"
-                        onClick={() => navigate("Vehicles")}
-                      >
-                        Open vehicle verification
-                        <Icon name="Arrow" size={16} />
-                      </button>
-                    </div>
+                    {registeredVehicle ? (
+                      <div className="registered-vehicle">
+                        <div className="registered-vehicle-heading">
+                          <h2>{registeredVehicle.name}</h2>
+                          <Badge>{registeredVehicle.status}</Badge>
+                        </div>
+                        <VehicleDetails vehicle={registeredVehicle} />
+                        <button
+                          className="secondary"
+                          onClick={() =>
+                            setDetail({
+                              kind: "vehicle",
+                              id: registeredVehicle.id,
+                            })
+                          }
+                        >
+                          Open vehicle verification
+                          <Icon name="Arrow" size={16} />
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="empty">
+                        No vehicle has been registered for this driver.
+                      </div>
+                    )}
                   </Panel>
                 )}
                 {driverTab === "Trips" && (
@@ -1241,7 +1335,34 @@ function AdminWorkspace({
           )}
           {page === "Vehicles" && (
             <section className="panel records">
-              {tabs(["Pending review", "Approved", "Rejected"], vehicles)}
+              <div className="verification-toolbar">
+                <p>Registered vehicles</p>
+                <button
+                  className="secondary"
+                  disabled={registrationLoading}
+                  onClick={() => setRegistrationRevision((value) => value + 1)}
+                >
+                  Refresh registrations
+                </button>
+              </div>
+              {registrationLoading && (
+                <p role="status">Loading registrations…</p>
+              )}
+              {registrationError && (
+                <p className="registration-error" role="alert">
+                  {registrationError}
+                </p>
+              )}
+              {tabs(
+                [
+                  "All",
+                  "Pending review",
+                  "Under review",
+                  "Approved",
+                  "Rejected",
+                ],
+                vehicles,
+              )}
               <div className="vehicle-list">
                 {slice(visibleVehicles).map((v) => (
                   <button
@@ -1267,7 +1388,7 @@ function AdminWorkspace({
               {pager(visibleVehicles.length)}
             </section>
           )}
-          {page === "Support" && (
+          {page === "Support" && !supportTicket && (
             <section className="panel records">
               {tabs(["All", "Open", "In progress", "Resolved"], tickets)}
               <Table
@@ -1283,14 +1404,14 @@ function AdminWorkspace({
                   <button
                     key="ticket"
                     className="record-link"
-                    onClick={() => setDetail({ kind: "ticket", id: t.id })}
+                    onClick={() => openSupportTicket(t.id)}
                   >
                     {t.id}
                   </button>,
                   <button
                     key="subject"
                     className="record-link"
-                    onClick={() => setDetail({ kind: "ticket", id: t.id })}
+                    onClick={() => openSupportTicket(t.id)}
                   >
                     {t.subject}
                   </button>,
@@ -1303,6 +1424,36 @@ function AdminWorkspace({
               {pager(visibleTickets.length)}
             </section>
           )}
+          {page === "Support" &&
+            supportTicket &&
+            supportCases[supportTicket.id] && (
+              <SupportTicketView
+                key={supportTicket.id}
+                ticket={supportTicket}
+                data={supportCases[supportTicket.id]}
+                actor={name}
+                onBack={() => setSupportTicketId(null)}
+                onTrip={(id) => setDetail({ kind: "trip", id })}
+                onToast={setToast}
+                onViewChange={() =>
+                  scrollContainer.current?.scrollTo({ top: 0 })
+                }
+                onUpdate={(value, patch) => {
+                  setSupportCases((previous) => ({
+                    ...previous,
+                    [supportTicket.id]: value,
+                  }));
+                  if (patch)
+                    setTickets((previous) =>
+                      previous.map((ticket) =>
+                        ticket.id === supportTicket.id
+                          ? { ...ticket, ...patch }
+                          : ticket,
+                      ),
+                    );
+                }}
+              />
+            )}
           {page === "Payments" && (
             <>
               <div className="stats-grid mini">
@@ -1506,6 +1657,7 @@ function AdminWorkspace({
                             joined: "Today",
                             vehicle: "Not provided",
                             plate: "Not provided",
+                            registeredVehicleId: null,
                           },
                           ...drivers,
                         ]);
@@ -1594,69 +1746,45 @@ function AdminWorkspace({
                     {v.plate} · {v.driver}
                   </p>
                   <Badge>{v.status}</Badge>
-                  <div className="dialog-info">
-                    Registration, insurance and inspection records are
-                    placeholders in this screen preview. Live document viewing
-                    is not connected.
-                  </div>
-                  <div className="dialog-actions">
-                    {["Approved", "Rejected"].map((status) => (
-                      <button
-                        key={status}
-                        className={status === "Approved" ? "primary" : "danger"}
-                        onClick={() => {
-                          setVehicles(
-                            vehicles.map((x) =>
-                              x.id === v.id ? { ...x, status } : x,
-                            ),
-                          );
-                          setDetail(null);
-                          setToast("Sample vehicle status updated");
-                        }}
-                      >
-                        {status === "Approved"
-                          ? "Approve sample"
-                          : "Reject sample"}
-                      </button>
-                    ))}
-                  </div>
-                </>
-              );
-            }
-            if (detail.kind === "ticket") {
-              const ticket = tickets.find((x) => x.id === detail.id)!;
-              return (
-                <>
-                  <p className="eyebrow">{ticket.id}</p>
-                  <h2>{ticket.subject}</h2>
-                  <p>
-                    Reported by {ticket.user} · {ticket.type}
-                  </p>
-                  <Badge>{ticket.status}</Badge>
-                  <div className="dialog-info">
-                    Sample support case. Messages and live case assignments are
-                    not connected.
-                  </div>
-                  <label className="field-label">
-                    Status
-                    <select
-                      value={ticket.status}
-                      onChange={(e) => {
-                        setTickets(
-                          tickets.map((t) =>
-                            t.id === ticket.id
-                              ? { ...t, status: e.target.value }
-                              : t,
-                          ),
-                        );
-                        setToast("Sample ticket updated");
-                      }}
-                    >
-                      <option>Open</option>
-                      <option>In progress</option>
-                      <option>Resolved</option>
-                    </select>
-                  </label>
+                  <VehicleDetails vehicle={v} />
+                  {v.live ? (
+                    <VerificationDocuments
+                      key={v.driverId}
+                      driverId={v.driverId}
+                      accessToken={accessToken}
+                    />
+                  ) : (
+                    <>
+                      <div className="dialog-info">
+                        Registration, insurance and inspection records are
+                        placeholders in this screen preview. Live document
+                        viewing is not connected.
+                      </div>
+                      <div className="dialog-actions">
+                        {["Approved", "Rejected"].map((status) => (
+                          <button
+                            key={status}
+                            className={
+                              status === "Approved" ? "primary" : "danger"
+                            }
+                            onClick={() => {
+                              setVehicles(
+                                vehicles.map((x) =>
+                                  x.id === v.id ? { ...x, status } : x,
+                                ),
+                              );
+                              setDetail(null);
+                              setToast("Sample vehicle status updated");
+                            }}
+                          >
+                            {status === "Approved"
+                              ? "Approve sample"
+                              : "Reject sample"}
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  )}
                 </>
               );
             }

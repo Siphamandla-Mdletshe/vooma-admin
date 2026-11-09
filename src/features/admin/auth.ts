@@ -16,7 +16,7 @@ export interface AdminOtpChallenge {
   delivery: "provider" | "localTest";
 }
 
-function apiBaseUrl() {
+export function apiBaseUrl() {
   const baseUrl = new URL(
     import.meta.env.VITE_API_BASE_URL?.trim() || "http://localhost:4000",
   );
@@ -24,7 +24,9 @@ function apiBaseUrl() {
   const octets = hostname.split(".").map(Number);
   const privateIpv4 =
     octets.length === 4 &&
-    octets.every((octet) => Number.isInteger(octet) && octet >= 0 && octet <= 255) &&
+    octets.every(
+      (octet) => Number.isInteger(octet) && octet >= 0 && octet <= 255,
+    ) &&
     (octets[0] === 10 ||
       (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31) ||
       (octets[0] === 192 && octets[1] === 168));

@@ -1,4 +1,10 @@
-import { useEffect, useState, type CSSProperties, type FormEvent } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type FormEvent,
+} from "react";
 
 import palette from "../../brand/tokens.json";
 import { VoomaMark } from "../../brand/VoomaMark";
@@ -29,21 +35,153 @@ function ArrowIcon() {
   );
 }
 
+function EmailIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.3"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="3" y="5" width="18" height="14" rx="3" />
+      <path d="m4 7 8 6 8-6" />
+    </svg>
+  );
+}
+
 interface AdminLoginProps {
   onAuthenticated: (result: AdminAuthResult) => void;
 }
 
+function CodeInput({
+  digits,
+  onChange,
+  disabled,
+}: {
+  digits: string[];
+  onChange: (digits: string[]) => void;
+  disabled: boolean;
+}) {
+  const inputs = useRef<Array<HTMLInputElement | null>>([]);
+
+  useEffect(() => {
+    inputs.current[0]?.focus();
+  }, []);
+
+  function enterDigits(index: number, value: string) {
+    const entered = value.replace(/\D/g, "").slice(0, 6);
+    if (!entered) {
+      if (!value)
+        onChange(digits.map((digit, i) => (i === index ? "" : digit)));
+      return;
+    }
+    const start = entered.length === 6 ? 0 : index;
+    const next = [...digits];
+    for (let i = 0; i < entered.length && start + i < 6; i++) {
+      next[start + i] = entered[i];
+    }
+    onChange(next);
+    inputs.current[Math.min(start + entered.length, 5)]?.focus();
+  }
+
+  return (
+    <div
+      className="login-code-inputs"
+      role="group"
+      aria-labelledby="admin-code-label"
+    >
+      {digits.map((digit, index) => (
+        <input
+          key={index}
+          ref={(element) => {
+            inputs.current[index] = element;
+          }}
+          id={`admin-code-${index}`}
+          aria-label={`Digit ${index + 1} of 6`}
+          type="text"
+          inputMode="numeric"
+          autoComplete={index === 0 ? "one-time-code" : "off"}
+          pattern="[0-9]"
+          required
+          disabled={disabled}
+          value={digit}
+          onFocus={(event) => event.currentTarget.select()}
+          onChange={(event) => enterDigits(index, event.target.value)}
+          onPaste={(event) => {
+            event.preventDefault();
+            enterDigits(index, event.clipboardData.getData("text"));
+          }}
+          onKeyDown={(event) => {
+            if (event.ctrlKey || event.metaKey || event.altKey) return;
+            if (/^[0-9]$/.test(event.key)) {
+              event.preventDefault();
+              enterDigits(index, event.key);
+            } else if (event.key === "Backspace" || event.key === "Delete") {
+              event.preventDefault();
+              const target =
+                event.key === "Backspace" && !digit
+                  ? Math.max(0, index - 1)
+                  : index;
+              onChange(digits.map((value, i) => (i === target ? "" : value)));
+              inputs.current[target]?.focus();
+            } else if (
+              event.key === "ArrowLeft" ||
+              event.key === "ArrowRight"
+            ) {
+              event.preventDefault();
+              const target = Math.max(
+                0,
+                Math.min(5, index + (event.key === "ArrowLeft" ? -1 : 1)),
+              );
+              inputs.current[target]?.focus();
+            }
+          }}
+        />
+      ))}
+    </div>
+  );
+}
+
 export function AdminLogin({ onAuthenticated }: AdminLoginProps) {
   const [email, setEmail] = useState("");
-  const [code, setCode] = useState("");
+  const [codeDigits, setCodeDigits] = useState<string[]>(Array(6).fill(""));
   const [challenge, setChallenge] = useState<AdminOtpChallenge | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [operation, setOperation] = useState<"sending" | "verifying" | null>(
+    null,
+  );
+  const operationRef = useRef<typeof operation>(null);
+  const requestVersion = useRef(0);
+  const busy = operation !== null;
   const [localMessage, setLocalMessage] = useState("");
   const [resendWait, setResendWait] = useState(0);
+  const [verifiedAuth, setVerifiedAuth] = useState<AdminAuthResult | null>(
+    null,
+  );
 
   useEffect(() => {
     document.title = "Sign in | Vooma Admin";
+    return () => {
+      requestVersion.current += 1;
+    };
   }, []);
+
+  useEffect(() => {
+    document.title = challenge
+      ? "Verify your email | Vooma Admin"
+      : "Sign in | Vooma Admin";
+  }, [challenge]);
+
+  useEffect(() => {
+    if (!verifiedAuth) return;
+    const version = requestVersion.current;
+    const timer = window.setTimeout(() => {
+      if (version === requestVersion.current) onAuthenticated(verifiedAuth);
+    }, 1200);
+    return () => window.clearTimeout(timer);
+  }, [verifiedAuth, onAuthenticated]);
 
   useEffect(() => {
     if (!challenge) {
@@ -59,59 +197,89 @@ export function AdminLogin({ onAuthenticated }: AdminLoginProps) {
     return () => window.clearInterval(interval);
   }, [challenge]);
 
+  function beginOperation(next: "sending" | "verifying") {
+    operationRef.current = next;
+    setOperation(next);
+    setLocalMessage("");
+    setVerifiedAuth(null);
+    return ++requestVersion.current;
+  }
+
+  function finishOperation(version: number) {
+    if (version !== requestVersion.current) return;
+    operationRef.current = null;
+    setOperation(null);
+  }
+
   async function requestCode(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setBusy(true);
-    setLocalMessage("");
+    if (operationRef.current) return;
+    const version = beginOperation("sending");
     try {
       const result = await requestAdminOtp(email);
+      if (version !== requestVersion.current) return;
       setChallenge(result);
     } catch (error) {
+      if (version !== requestVersion.current) return;
       setLocalMessage(
         error instanceof Error
           ? error.message
           : "Unable to request a sign-in code.",
       );
     } finally {
-      setBusy(false);
+      finishOperation(version);
     }
   }
 
   async function resendCode() {
-    setBusy(true);
-    setLocalMessage("");
+    if (
+      operationRef.current === "sending" ||
+      !challenge ||
+      challenge.resendAt > Date.now()
+    )
+      return;
+    const version = beginOperation("sending");
+    setCodeDigits(Array(6).fill(""));
     try {
       const result = await requestAdminOtp(email);
+      if (version !== requestVersion.current) return;
       setChallenge(result);
-      setCode("");
     } catch (error) {
+      if (version !== requestVersion.current) return;
       setLocalMessage(
         error instanceof Error ? error.message : "Unable to resend the code.",
       );
     } finally {
-      setBusy(false);
+      finishOperation(version);
     }
   }
 
-  async function verifyCode(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!challenge) return;
-    setBusy(true);
-    setLocalMessage("");
+  async function verifyCode(code: string) {
+    if (
+      !challenge ||
+      !/^[0-9]{6}$/.test(code) ||
+      operationRef.current ||
+      verifiedAuth
+    )
+      return;
+    const version = beginOperation("verifying");
     try {
-      onAuthenticated(await verifyAdminOtp(challenge.challengeId, code));
+      const result = await verifyAdminOtp(challenge.challengeId, code);
+      if (version !== requestVersion.current) return;
+      setVerifiedAuth(result);
     } catch (error) {
+      if (version !== requestVersion.current) return;
       setLocalMessage(
         error instanceof Error ? error.message : "Unable to verify the code.",
       );
     } finally {
-      setBusy(false);
+      finishOperation(version);
     }
   }
 
   return (
     <div
-      className="admin-login"
+      className={`admin-login${challenge ? " login-verification" : ""}`}
       style={
         {
           "--navy": palette.navy,
@@ -154,11 +322,31 @@ export function AdminLogin({ onAuthenticated }: AdminLoginProps) {
         />
       </aside>
       <main className="login-main">
-        <div className="login-card">
-          <span className="login-eyebrow">ADMINISTRATOR ACCESS</span>
-          <h1>Welcome back.</h1>
-          <p className="login-subtitle">Sign in with your Vooma admin email.</p>
-          {localMessage && (
+        <div className={`login-card${challenge ? " verification-card" : ""}`}>
+          {challenge ? (
+            <header className="verification-header">
+              <div className="verification-icon">
+                <EmailIcon />
+              </div>
+              <h1>Verify your email</h1>
+              <p className="login-subtitle">
+                We’ve sent a 6-digit verification code to
+              </p>
+              <div className="verification-email">
+                <EmailIcon />
+                <strong>{email}</strong>
+              </div>
+            </header>
+          ) : (
+            <>
+              <span className="login-eyebrow">ADMINISTRATOR ACCESS</span>
+              <h1>Welcome back.</h1>
+              <p className="login-subtitle">
+                Sign in with your Vooma admin email.
+              </p>
+            </>
+          )}
+          {!challenge && localMessage && (
             <p className="login-feedback" role="alert">
               {localMessage}
             </p>
@@ -184,59 +372,97 @@ export function AdminLogin({ onAuthenticated }: AdminLoginProps) {
               </button>
             </form>
           ) : (
-            <form onSubmit={(event) => void verifyCode(event)}>
-              <label className="login-field-label" htmlFor="admin-code">
-                Six-digit code sent to {email}
-              </label>
-              <input
-                id="admin-code"
-                type="text"
-                inputMode="numeric"
-                autoComplete="one-time-code"
-                pattern="[0-9]{6}"
-                maxLength={6}
-                required
-                value={code}
-                onChange={(event) =>
-                  setCode(event.target.value.replace(/\D/g, "").slice(0, 6))
-                }
-                placeholder="000000"
-              />
-              <button
-                className="login-submit"
-                type="submit"
-                disabled={busy || code.length !== 6}
+            <form
+              className="verification-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (verifiedAuth) onAuthenticated(verifiedAuth);
+                else void verifyCode(codeDigits.join(""));
+              }}
+            >
+              <label
+                className="verification-code-label"
+                id="admin-code-label"
+                htmlFor="admin-code-0"
               >
-                {busy ? "Verifying…" : "Verify and sign in"}
+                Six-digit verification code
+              </label>
+              <CodeInput
+                key={challenge.challengeId}
+                digits={codeDigits}
+                onChange={(digits) => {
+                  if (operationRef.current || verifiedAuth) return;
+                  setCodeDigits(digits);
+                  setLocalMessage("");
+                  if (digits.every((digit) => /^[0-9]$/.test(digit))) {
+                    void verifyCode(digits.join(""));
+                  }
+                }}
+                disabled={busy || !!verifiedAuth}
+              />
+              <div className="verification-status">
+                {localMessage ? (
+                  <p className="verification-error" role="alert">
+                    {localMessage}
+                  </p>
+                ) : (
+                  <p
+                    className={`login-code-status${verifiedAuth ? " verified" : ""}`}
+                    role="status"
+                  >
+                    {verifiedAuth ? (
+                      <>
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                          <circle cx="12" cy="12" r="11" fill="#25c915" />
+                          <path
+                            d="m7 12 3 3 7-7"
+                            fill="none"
+                            stroke="white"
+                            strokeWidth="2.5"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                        </svg>
+                        Code verified successfully!
+                      </>
+                    ) : operation === "verifying" ? (
+                      "Verifying code…"
+                    ) : operation === "sending" ? (
+                      "Sending another code…"
+                    ) : (
+                      ""
+                    )}
+                  </p>
+                )}
+              </div>
+              <button
+                className="login-submit verification-continue"
+                type="submit"
+                disabled={busy || codeDigits.some((digit) => !digit)}
+              >
+                {operation === "verifying" ? "Verifying…" : "Continue"}
                 <ArrowIcon />
               </button>
-              <button
-                className="login-change-email"
-                type="button"
-                disabled={busy || resendWait > 0}
-                onClick={() => void resendCode()}
-              >
-                {resendWait > 0
-                  ? `Send another code in ${resendWait}s`
-                  : "Send another code"}
-              </button>
-              <button
-                className="login-change-email"
-                type="button"
-                disabled={busy}
-                onClick={() => {
-                  setChallenge(null);
-                  setCode("");
-                  setLocalMessage("");
-                }}
-              >
-                Use a different email
-              </button>
+              <div className="verification-resend">
+                <p>Didn’t receive the code?</p>
+                <button
+                  className="login-change-email"
+                  type="button"
+                  disabled={operation === "sending" || resendWait > 0}
+                  onClick={() => void resendCode()}
+                >
+                  {resendWait > 0
+                    ? `Resend code in ${resendWait}s`
+                    : "Resend code"}
+                </button>
+              </div>
             </form>
           )}
-          <p className="login-access-note">
-            Admin access is limited to email addresses approved by Vooma.
-          </p>
+          {!challenge && (
+            <p className="login-access-note">
+              Admin access is limited to email addresses approved by Vooma.
+            </p>
+          )}
         </div>
       </main>
     </div>
