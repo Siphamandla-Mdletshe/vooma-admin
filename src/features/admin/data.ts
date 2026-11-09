@@ -1,5 +1,6 @@
 export type Driver = {
   live?: boolean;
+  applicationVersion?: number;
   id: string;
   name: string;
   email: string;

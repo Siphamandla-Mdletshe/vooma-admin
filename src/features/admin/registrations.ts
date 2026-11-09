@@ -22,6 +22,7 @@ export type RegistrationDocuments = {
 type Registration = {
   id: string;
   status: string;
+  version: number;
   createdAt: number;
   updatedAt: number;
   profile: { name: string; email: string; phone: string; city: string } | null;
@@ -57,6 +58,10 @@ export async function registrationRequest(
     if (response.status === 409)
       throw new Error(
         "This document cannot be viewed until its security scan is clean.",
+      );
+    if (response.status === 503)
+      throw new Error(
+        "Driver onboarding is not configured on the API. Set its policy, cities, and encryption secrets, then restart the API.",
       );
     throw new Error("Unable to load registration data. Please try again.");
   }
@@ -116,6 +121,7 @@ export async function loadRegistrations(
       });
     return {
       live: true,
+      applicationVersion: record.version,
       id: record.id,
       name,
       email: record.profile?.email || "Not provided",
@@ -131,4 +137,50 @@ export async function loadRegistrations(
     };
   });
   return { drivers, vehicles };
+}
+
+export async function updateRegistrationStatus(
+  driverId: string,
+  accessToken: string,
+  expectedVersion: number,
+  status:
+    "underReview" | "changesRequested" | "rejected" | "approved" | "suspended",
+) {
+  let response: Response;
+  try {
+    response = await fetch(
+      apiBaseUrl() + `/v1/admin/drivers/${encodeURIComponent(driverId)}/status`,
+      {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({ expectedVersion, status }),
+        cache: "no-store",
+        credentials: "omit",
+      },
+    );
+  } catch {
+    throw new Error("Unable to reach the Vooma API. Check that it is running.");
+  }
+  if (!response.ok) {
+    if (response.status === 401)
+      throw new Error(
+        "Your admin session has expired. Sign out and sign in again.",
+      );
+    if (response.status === 404)
+      throw new Error(
+        "This registration is no longer available. Refresh the list.",
+      );
+    if (response.status === 409)
+      throw new Error(
+        "This application changed. Refresh registrations and try again.",
+      );
+    throw new Error(
+      "Unable to update the application status. Please try again.",
+    );
+  }
+  return (await response.json()) as { status: string; version: number };
 }

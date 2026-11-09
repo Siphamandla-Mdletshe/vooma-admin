@@ -23,7 +23,7 @@ import { logoutAdmin, type AdminAuthResult, type AdminSession } from "./auth";
 import { DashboardCharts } from "./DashboardCharts";
 import { VehicleDetails } from "./VehicleDetails";
 import { VerificationDocuments } from "./VerificationDocuments";
-import { loadRegistrations } from "./registrations";
+import { loadRegistrations, updateRegistrationStatus } from "./registrations";
 import { SupportTicketView } from "./SupportTicketView";
 import { createSupportCase, type SupportCase } from "./supportData";
 
@@ -269,6 +269,8 @@ function AdminWorkspace({
   const [registrationLoading, setRegistrationLoading] = useState(true);
   const [registrationError, setRegistrationError] = useState("");
   const [registrationRevision, setRegistrationRevision] = useState(0);
+  const [reviewing, setReviewing] = useState(false);
+  const [reviewError, setReviewError] = useState("");
   const [tickets, setTickets] = useState(initialTickets);
   const [supportTicketId, setSupportTicketId] = useState<string | null>(null);
   const [supportCases, setSupportCases] = useState<Record<string, SupportCase>>(
@@ -439,6 +441,50 @@ function AdminWorkspace({
     setSelected(d);
     setDriverTab("Overview");
   };
+  const reviewActions = (status: string) => {
+    switch (status) {
+      case "Pending review":
+        return [{ status: "underReview" as const, label: "Start review" }];
+      case "Under review":
+        return [
+          { status: "approved" as const, label: "Approve driver" },
+          { status: "changesRequested" as const, label: "Request changes" },
+          { status: "rejected" as const, label: "Reject application" },
+        ];
+      case "Approved":
+        return [{ status: "suspended" as const, label: "Suspend driver" }];
+      default:
+        return [];
+    }
+  };
+  async function reviewDriver(
+    liveDriver: Driver,
+    status: ReturnType<typeof reviewActions>[number]["status"],
+  ) {
+    if (!liveDriver.live || liveDriver.applicationVersion === undefined) return;
+    setReviewing(true);
+    setReviewError("");
+    try {
+      await updateRegistrationStatus(
+        liveDriver.id,
+        accessToken,
+        liveDriver.applicationVersion,
+        status,
+      );
+      setDetail(null);
+      setSelected(null);
+      setRegistrationRevision((value) => value + 1);
+      setToast("Driver application updated");
+    } catch (reason) {
+      setReviewError(
+        reason instanceof Error
+          ? reason.message
+          : "Unable to update the application status.",
+      );
+    } finally {
+      setReviewing(false);
+    }
+  }
   function tabs(options: string[], records: { status: string }[]) {
     return (
       <div className="tabs" role="tablist" aria-label="Status">
@@ -1094,7 +1140,21 @@ function AdminWorkspace({
                     </div>
                   ))}
                 </dl>
-                {!driver.live && (
+                {driver.live ? (
+                  reviewActions(driver.status).length > 0 && (
+                    <div className="profile-actions">
+                      <button
+                        className="primary"
+                        onClick={() => {
+                          setReviewError("");
+                          setDetail({ kind: "driverStatus", id: driver.id });
+                        }}
+                      >
+                        Review application
+                      </button>
+                    </div>
+                  )
+                ) : (
                   <div className="profile-actions">
                     <button
                       className="danger"
@@ -1705,6 +1765,40 @@ function AdminWorkspace({
               );
             if (detail.kind === "driverStatus") {
               const d = drivers.find((x) => x.id === detail.id)!;
+              if (d.live) {
+                const actions = reviewActions(d.status);
+                return (
+                  <>
+                    <h2>{d.name}</h2>
+                    <p>Choose the next review decision for this application.</p>
+                    <Badge>{d.status}</Badge>
+                    {reviewError && (
+                      <p className="registration-error" role="alert">
+                        {reviewError}
+                      </p>
+                    )}
+                    <div className="dialog-actions">
+                      {actions.map((action) => (
+                        <button
+                          key={action.status}
+                          className={
+                            action.status === "approved"
+                              ? "primary"
+                              : action.status === "rejected" ||
+                                  action.status === "suspended"
+                                ? "danger"
+                                : "secondary"
+                          }
+                          disabled={reviewing}
+                          onClick={() => void reviewDriver(d, action.status)}
+                        >
+                          {reviewing ? "Updating…" : action.label}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                );
+              }
               return (
                 <>
                   <h2>{d.name}</h2>
