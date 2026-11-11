@@ -1,5 +1,6 @@
 import {
   useEffect,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
@@ -23,9 +24,25 @@ import { logoutAdmin, type AdminAuthResult, type AdminSession } from "./auth";
 import { DashboardCharts } from "./DashboardCharts";
 import { VehicleDetails } from "./VehicleDetails";
 import { VerificationDocuments } from "./VerificationDocuments";
-import { loadRegistrations, updateRegistrationStatus } from "./registrations";
+import {
+  loadRegistrations,
+  updateRegistrationStatus,
+  reviewReasonError,
+  RegistrationConflictError,
+  decideSuspensionAppeal,
+} from "./registrations";
+import { VehiclePhoto } from "./VehiclePhoto";
+import { selectedDriversCsv } from "./driver-export";
 import { SupportTicketView } from "./SupportTicketView";
 import { createSupportCase, type SupportCase } from "./supportData";
+import { ApplicationFilters } from "./ApplicationFilters";
+import {
+  applicationTabs,
+  applicationStatusLabels,
+  filterApplications,
+  initialApplicationFilters,
+  type ApplicationFilters as Filters,
+} from "./application-filters";
 
 const pages = [
   "Dashboard",
@@ -133,17 +150,6 @@ function Avatar({
           .slice(0, 2)
           .join("")}
     </span>
-  );
-}
-function VehicleArt({ name }: { name: string }) {
-  const col = name.includes("Moto") ? 3 : name.includes("Kia") ? 2 : 1;
-  return (
-    <span
-      className="vehicle-art"
-      role="img"
-      aria-label={name}
-      style={{ backgroundPosition: `${(col * 100) / 3}% 100%` }}
-    />
   );
 }
 function Badge({ children }: { children: string }) {
@@ -271,6 +277,7 @@ function AdminWorkspace({
   const [registrationRevision, setRegistrationRevision] = useState(0);
   const [reviewing, setReviewing] = useState(false);
   const [reviewError, setReviewError] = useState("");
+  const [reviewReason, setReviewReason] = useState("");
   const [tickets, setTickets] = useState(initialTickets);
   const [supportTicketId, setSupportTicketId] = useState<string | null>(null);
   const [supportCases, setSupportCases] = useState<Record<string, SupportCase>>(
@@ -278,7 +285,9 @@ function AdminWorkspace({
   );
   const [query, setQuery] = useState("");
   const [tab, setTab] = useState("All");
-  const [city, setCity] = useState("All cities");
+  const [applicationFilters, setApplicationFilters] = useState(
+    initialApplicationFilters,
+  );
   const [filterOpen, setFilterOpen] = useState(false);
   const [current, setCurrent] = useState(1);
   const [selected, setSelected] = useState<Driver | null>(null);
@@ -290,6 +299,8 @@ function AdminWorkspace({
   const [usersOpen, setUsersOpen] = useState(true);
   const [userMenu, setUserMenu] = useState(false);
   const [selectedDrivers, setSelectedDrivers] = useState<string[]>([]);
+  const [bulkWorking, setBulkWorking] = useState(false);
+  const [bulkError, setBulkError] = useState("");
   const [driverMessages, setDriverMessages] = useState<Record<string, string>>(
     {},
   );
@@ -326,7 +337,7 @@ function AdminWorkspace({
       setSupportTicketId(null);
       setQuery("");
       setTab("All");
-      setCity("All cities");
+      setApplicationFilters(initialApplicationFilters);
       setFilterOpen(false);
       setCurrent(1);
     };
@@ -363,7 +374,7 @@ function AdminWorkspace({
     setTab("All");
     setFilterOpen(false);
     setUserMenu(false);
-    setCity("All cities");
+    setApplicationFilters(initialApplicationFilters);
     setSelected(null);
     setSupportTicketId(null);
     setCurrent(1);
@@ -380,6 +391,89 @@ function AdminWorkspace({
     setSupportTicketId(id);
   }
   const supportTicket = tickets.find((ticket) => ticket.id === supportTicketId);
+  const selectedRecords = drivers.filter((driver) =>
+    selectedDrivers.includes(driver.id),
+  );
+  const pendingSelected = selectedRecords.filter(
+    (driver) =>
+      driver.live &&
+      driver.applicationVersion !== undefined &&
+      driver.status === "Pending review",
+  );
+  async function startSelectedReviews() {
+    if (bulkWorking || !pendingSelected.length) return;
+    setBulkWorking(true);
+    setBulkError("");
+    const updated = new Set<string>();
+    const failed: string[] = [];
+    for (const driver of pendingSelected) {
+      try {
+        await updateRegistrationStatus(
+          driver.id,
+          accessToken,
+          driver.applicationVersion!,
+          "underReview",
+        );
+        updated.add(driver.id);
+      } catch {
+        failed.push(driver.name);
+      }
+    }
+    const remaining = selectedDrivers.filter((id) => !updated.has(id));
+    setSelectedDrivers(remaining);
+    setCurrent(1);
+    setTab(remaining.length ? "All" : "Under review");
+    setRegistrationRevision((value) => value + 1);
+    setToast(
+      `Started review for ${updated.size} application${updated.size === 1 ? "" : "s"}`,
+    );
+    if (failed.length)
+      setBulkError(
+        `${failed.length} application(s) could not be updated, including ${failed.slice(0, 3).join(", ")}. They remain selected. Refresh and review their latest status before trying again.`,
+      );
+    setBulkWorking(false);
+  }
+  function exportSelectedDrivers() {
+    const url = URL.createObjectURL(
+      new Blob([selectedDriversCsv(selectedRecords)], {
+        type: "text/csv;charset=utf-8",
+      }),
+    );
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "vooma-selected-drivers.csv";
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  }
+  async function resolveAppeal(decision: "accepted" | "upheld") {
+    const driver = drivers.find((driver) => driver.id === detail?.id);
+    if (!driver || reviewing) return;
+    setReviewing(true);
+    setReviewError("");
+    try {
+      await decideSuspensionAppeal(
+        driver.id,
+        accessToken,
+        driver.applicationVersion!,
+        decision,
+        reviewReason,
+      );
+      setDetail(null);
+      setSelected(null);
+      setTab(decision === "accepted" ? "Approved" : "Suspended");
+      setCurrent(1);
+      setRegistrationRevision((value) => value + 1);
+      setToast("Appeal decision saved");
+    } catch (error) {
+      setReviewError(
+        error instanceof Error ? error.message : "Unable to resolve appeal.",
+      );
+      if (error instanceof RegistrationConflictError)
+        setRegistrationRevision((value) => value + 1);
+    } finally {
+      setReviewing(false);
+    }
+  }
   const match = (value: unknown) =>
     JSON.stringify(value).toLowerCase().includes(query.toLowerCase());
   const driver = selected ? drivers.find((d) => d.id === selected.id)! : null;
@@ -390,11 +484,24 @@ function AdminWorkspace({
           vehicle.driverId === driver.id,
       )
     : undefined;
-  const visibleDrivers = drivers.filter(
-    (d) =>
-      match(d) &&
-      (tab === "All" || d.status === tab) &&
-      (city === "All cities" || d.city === city),
+  const filteredDrivers = useMemo(
+    () => filterApplications(drivers, query, applicationFilters),
+    [drivers, query, applicationFilters],
+  );
+  const visibleDrivers = useMemo(
+    () => filteredDrivers.filter((d) => tab === "All" || d.status === tab),
+    [filteredDrivers, tab],
+  );
+  const vehicleByDriver = useMemo(
+    () => new Map(vehicles.map((vehicle) => [vehicle.driverId, vehicle])),
+    [vehicles],
+  );
+  const filteredVehicles = useMemo(
+    () =>
+      filteredDrivers
+        .map((driver) => vehicleByDriver.get(driver.id))
+        .filter((vehicle): vehicle is Vehicle => vehicle !== undefined),
+    [filteredDrivers, vehicleByDriver],
   );
   const visibleTrips = trips.filter(
     (d) =>
@@ -405,8 +512,8 @@ function AdminWorkspace({
   const visiblePassengers = passengers.filter(
     (d) => match(d) && (tab === "All" || d.status === tab),
   );
-  const visibleVehicles = vehicles.filter(
-    (d) => match(d) && (tab === "All" || d.status === tab),
+  const visibleVehicles = filteredVehicles.filter(
+    (vehicle) => tab === "All" || vehicle.status === tab,
   );
   const visibleTickets = tickets.filter(
     (d) => match(d) && (tab === "All" || d.status === tab),
@@ -461,7 +568,18 @@ function AdminWorkspace({
     liveDriver: Driver,
     status: ReturnType<typeof reviewActions>[number]["status"],
   ) {
-    if (!liveDriver.live || liveDriver.applicationVersion === undefined) return;
+    if (
+      reviewing ||
+      !liveDriver.live ||
+      liveDriver.applicationVersion === undefined
+    )
+      return;
+    const reason = reviewReason.trim();
+    const validationError = reviewReasonError(status, reviewReason);
+    if (validationError) {
+      setReviewError(validationError);
+      return;
+    }
     setReviewing(true);
     setReviewError("");
     try {
@@ -470,12 +588,23 @@ function AdminWorkspace({
         accessToken,
         liveDriver.applicationVersion,
         status,
+        status === "changesRequested" ||
+          status === "rejected" ||
+          status === "suspended"
+          ? reason
+          : undefined,
       );
       setDetail(null);
       setSelected(null);
+      setTab(applicationStatusLabels[status]);
+      setQuery("");
+      setApplicationFilters(initialApplicationFilters);
+      setCurrent(1);
       setRegistrationRevision((value) => value + 1);
       setToast("Driver application updated");
     } catch (reason) {
+      if (reason instanceof RegistrationConflictError)
+        setRegistrationRevision((value) => value + 1);
       setReviewError(
         reason instanceof Error
           ? reason.message
@@ -522,12 +651,13 @@ function AdminWorkspace({
   const pageSize = 10;
   function pager(total: number) {
     const pagesCount = Math.max(1, Math.ceil(total / pageSize));
+    const pageNumber = Math.min(current, pagesCount);
     const pageNumbers = [
       ...new Set([
         1,
-        current > 3 ? current - 1 : 2,
-        current > 3 ? current : 3,
-        ...(current > 3 && current < pagesCount ? [current + 1] : []),
+        pageNumber > 3 ? pageNumber - 1 : 2,
+        pageNumber > 3 ? pageNumber : 3,
+        ...(pageNumber > 3 && pageNumber < pagesCount ? [pageNumber + 1] : []),
         pagesCount,
       ]),
     ]
@@ -537,15 +667,15 @@ function AdminWorkspace({
       <div className="pager">
         <span>
           {total
-            ? `Showing ${(current - 1) * pageSize + 1}–${Math.min(current * pageSize, total)} of ${total.toLocaleString("en-US")}`
+            ? `Showing ${(pageNumber - 1) * pageSize + 1}–${Math.min(pageNumber * pageSize, total)} of ${total.toLocaleString("en-US")}`
             : "0 records"}
         </span>
         <div>
           <button
             className="icon-button pager-arrow"
             aria-label="Previous page"
-            disabled={current === 1}
-            onClick={() => setCurrent(current - 1)}
+            disabled={pageNumber === 1}
+            onClick={() => setCurrent(pageNumber - 1)}
           >
             <Icon name="Chevron" size={15} />
           </button>
@@ -556,8 +686,8 @@ function AdminWorkspace({
               )}
               <button
                 aria-label={`Page ${number}`}
-                aria-current={current === number ? "page" : undefined}
-                className={`page-number ${current === number ? "active" : ""}`}
+                aria-current={pageNumber === number ? "page" : undefined}
+                className={`page-number ${pageNumber === number ? "active" : ""}`}
                 onClick={() => setCurrent(number)}
               >
                 {number.toLocaleString("en-US")}
@@ -567,8 +697,8 @@ function AdminWorkspace({
           <button
             className="icon-button"
             aria-label="Next page"
-            disabled={current === pagesCount}
-            onClick={() => setCurrent(current + 1)}
+            disabled={pageNumber === pagesCount}
+            onClick={() => setCurrent(pageNumber + 1)}
           >
             <Icon name="Chevron" size={15} />
           </button>
@@ -576,8 +706,13 @@ function AdminWorkspace({
       </div>
     );
   }
-  const slice = <T,>(rows: T[]) =>
-    rows.slice((current - 1) * pageSize, current * pageSize);
+  const slice = <T,>(rows: T[]) => {
+    const pageNumber = Math.min(
+      current,
+      Math.max(1, Math.ceil(rows.length / pageSize)),
+    );
+    return rows.slice((pageNumber - 1) * pageSize, pageNumber * pageSize);
+  };
   const search = (
     <div className="search">
       <Icon name="Search" />
@@ -585,7 +720,7 @@ function AdminWorkspace({
         aria-label={`Search ${page.toLowerCase()}`}
         placeholder={
           page === "Drivers"
-            ? "Search by name, phone or ID..."
+            ? "Search name, email, phone, plate or ID..."
             : page === "Passengers"
               ? "Search by name, phone or email..."
               : page === "Trips"
@@ -602,7 +737,10 @@ function AdminWorkspace({
         <button
           className="icon-button"
           aria-label="Clear search"
-          onClick={() => setQuery("")}
+          onClick={() => {
+            setQuery("");
+            setCurrent(1);
+          }}
         >
           <Icon name="Close" size={14} />
         </button>
@@ -621,6 +759,83 @@ function AdminWorkspace({
       <option>Last 30 days</option>
       <option>Last 7 days</option>
     </select>
+  );
+  function changeApplicationFilters(value: Partial<Filters>) {
+    setApplicationFilters((previous) => ({ ...previous, ...value }));
+    setCurrent(1);
+    setSelectedDrivers([]);
+  }
+  const activeApplicationFilters = [
+    applicationFilters.city,
+    applicationFilters.make,
+    applicationFilters.from,
+    applicationFilters.until,
+    applicationFilters.bodyType,
+    applicationFilters.appealsOnly,
+  ].filter(Boolean).length;
+  const applicationControls = (
+    <>
+      <div className="toolbar">
+        {search}
+        <select
+          aria-label="Sort applications"
+          value={applicationFilters.sort}
+          onChange={(event) =>
+            changeApplicationFilters({
+              sort: event.target.value as Filters["sort"],
+            })
+          }
+        >
+          <option value="newest">Newest applications</option>
+          <option value="oldest">Oldest applications</option>
+          <option value="updated">Recently updated</option>
+          <option value="name">Driver name A–Z</option>
+        </select>
+        <button
+          className="secondary"
+          aria-expanded={filterOpen}
+          aria-controls="application-filters"
+          onClick={() => setFilterOpen(!filterOpen)}
+        >
+          <Icon name="Filter" size={16} />
+          Filters
+          {activeApplicationFilters > 0 ? ` (${activeApplicationFilters})` : ""}
+        </button>
+      </div>
+      {filterOpen && (
+        <ApplicationFilters
+          filters={applicationFilters}
+          cities={[...new Set(drivers.map((driver) => driver.city))].sort()}
+          makes={[
+            ...new Set(
+              drivers
+                .map((driver) => driver.vehicleMake)
+                .filter((make): make is string => !!make),
+            ),
+          ].sort()}
+          onChange={changeApplicationFilters}
+          onClear={() => {
+            setApplicationFilters(initialApplicationFilters);
+            setCurrent(1);
+          }}
+        />
+      )}
+      <p className="application-filter-summary" role="status">
+        {page === "Vehicles" ? visibleVehicles.length : visibleDrivers.length}{" "}
+        matching {page.toLowerCase()}
+        {activeApplicationFilters > 0 && !filterOpen && (
+          <button
+            className="text-link"
+            onClick={() => {
+              setApplicationFilters(initialApplicationFilters);
+              setCurrent(1);
+            }}
+          >
+            Clear filters
+          </button>
+        )}
+      </p>
+    </>
   );
   const filterControl = (
     <>
@@ -974,7 +1189,7 @@ function AdminWorkspace({
           {page === "Drivers" && !driver && (
             <section className="panel records">
               <div className="verification-toolbar">
-                <p>Driver registrations</p>
+                <p>Submitted driver applications</p>
                 <button
                   className="secondary"
                   disabled={registrationLoading}
@@ -991,61 +1206,51 @@ function AdminWorkspace({
                   {registrationError}
                 </p>
               )}
-              {tabs(
-                [
-                  "All",
-                  "Pending review",
-                  "Under review",
-                  "Approved",
-                  "Rejected",
-                  "Suspended",
-                ],
-                drivers,
-              )}
-              <div className="toolbar">
-                {search}
-                <button
-                  className="secondary"
-                  aria-expanded={filterOpen}
-                  onClick={() => setFilterOpen(!filterOpen)}
-                >
-                  <Icon name="Filter" size={16} />
-                  Filter
-                </button>
-                {filterOpen && (
-                  <select
-                    aria-label="Filter by city"
-                    value={city}
-                    onChange={(e) => {
-                      setCity(e.target.value);
-                      setCurrent(1);
-                    }}
-                  >
-                    <option>All cities</option>
-                    {[...new Set(drivers.map((record) => record.city))]
-                      .sort()
-                      .map((value) => (
-                        <option key={value}>{value}</option>
-                      ))}
-                  </select>
-                )}
-              </div>
+              {tabs(applicationTabs, filteredDrivers)}
+              {applicationControls}
               {selectedDrivers.length > 0 && (
                 <div className="selection-bar">
                   <span>{selectedDrivers.length} selected</span>
                   <button
+                    className="primary"
+                    disabled={bulkWorking || !pendingSelected.length}
+                    onClick={() => void startSelectedReviews()}
+                  >
+                    {bulkWorking
+                      ? "Starting reviews…"
+                      : `Start review (${pendingSelected.length})`}
+                  </button>
+                  <button
+                    className="secondary"
+                    disabled={bulkWorking || !selectedRecords.length}
+                    onClick={exportSelectedDrivers}
+                  >
+                    Export selected CSV
+                  </button>
+                  <span>
+                    Only pending applications can be started in bulk. Decisions
+                    are reviewed individually.
+                  </span>
+                  <button
                     className="text-link"
+                    disabled={bulkWorking}
                     onClick={() => setSelectedDrivers([])}
                   >
                     Clear selection
                   </button>
                 </div>
               )}
+              {bulkError && (
+                <p role="alert" className="registration-error">
+                  {bulkError}
+                </p>
+              )}
               <Table
                 headers={[
                   <input
                     type="checkbox"
                     aria-label="Select all drivers on this page"
+                    disabled={bulkWorking}
                     checked={
                       slice(visibleDrivers).length > 0 &&
                       slice(visibleDrivers).every((d) =>
@@ -1081,6 +1286,7 @@ function AdminWorkspace({
                     type="checkbox"
                     aria-label={`Select ${d.name}`}
                     checked={selectedDrivers.includes(d.id)}
+                    disabled={bulkWorking}
                     onChange={(e) =>
                       setSelectedDrivers(
                         e.target.checked
@@ -1123,6 +1329,32 @@ function AdminWorkspace({
                 <h2>{driver.name}</h2>
                 <p>{driver.id}</p>
                 <Badge>{driver.status}</Badge>
+                {driver.reviewReason && (
+                  <p className="registration-feedback">
+                    <strong>Reviewer feedback:</strong> {driver.reviewReason}
+                  </p>
+                )}
+                {driver.appeal && (
+                  <div className="appeal-summary">
+                    <strong>Suspension appeal: {driver.appeal.status}</strong>
+                    <p>{driver.appeal.message}</p>
+                    {driver.appeal.decisionReason && (
+                      <p>Decision: {driver.appeal.decisionReason}</p>
+                    )}
+                  </div>
+                )}
+                {driver.appeal?.status === "pending" && (
+                  <button
+                    className="primary"
+                    onClick={() => {
+                      setReviewError("");
+                      setReviewReason("");
+                      setDetail({ kind: "driverAppeal", id: driver.id });
+                    }}
+                  >
+                    Review appeal
+                  </button>
+                )}
                 <dl className="profile-facts">
                   {[
                     ["Phone", driver.phone],
@@ -1147,6 +1379,7 @@ function AdminWorkspace({
                         className="primary"
                         onClick={() => {
                           setReviewError("");
+                          setReviewReason("");
                           setDetail({ kind: "driverStatus", id: driver.id });
                         }}
                       >
@@ -1301,7 +1534,10 @@ function AdminWorkspace({
                           <h2>{registeredVehicle.name}</h2>
                           <Badge>{registeredVehicle.status}</Badge>
                         </div>
-                        <VehicleDetails vehicle={registeredVehicle} />
+                        <VehicleDetails
+                          vehicle={registeredVehicle}
+                          accessToken={accessToken}
+                        />
                         <button
                           className="secondary"
                           onClick={() =>
@@ -1413,16 +1649,8 @@ function AdminWorkspace({
                   {registrationError}
                 </p>
               )}
-              {tabs(
-                [
-                  "All",
-                  "Pending review",
-                  "Under review",
-                  "Approved",
-                  "Rejected",
-                ],
-                vehicles,
-              )}
+              {tabs(applicationTabs, filteredVehicles)}
+              {applicationControls}
               <div className="vehicle-list">
                 {slice(visibleVehicles).map((v) => (
                   <button
@@ -1430,7 +1658,7 @@ function AdminWorkspace({
                     key={v.id}
                     onClick={() => setDetail({ kind: "vehicle", id: v.id })}
                   >
-                    <VehicleArt name={v.name} />
+                    <VehiclePhoto vehicle={v} accessToken={accessToken} />
                     <span className="vehicle-info">
                       <strong>{v.name}</strong>
                       <span>{v.plate}</span>
@@ -1763,6 +1991,66 @@ function AdminWorkspace({
                   </form>
                 </>
               );
+            if (detail.kind === "driverAppeal") {
+              const driver = drivers.find((driver) => driver.id === detail.id);
+              if (!driver?.appeal)
+                return (
+                  <p>
+                    This appeal is no longer available. Refresh registrations.
+                  </p>
+                );
+              return (
+                <>
+                  <h2>Suspension appeal — {driver.name}</h2>
+                  <p>
+                    Suspension reason: {driver.reviewReason ?? "Not recorded"}
+                  </p>
+                  <p>Driver’s appeal: {driver.appeal.message}</p>
+                  <div className="dialog-form">
+                    <label>
+                      Appeal decision reason
+                      <textarea
+                        value={reviewReason}
+                        disabled={reviewing}
+                        maxLength={2000}
+                        rows={4}
+                        onChange={(event) =>
+                          setReviewReason(event.target.value)
+                        }
+                      />
+                    </label>
+                  </div>
+                  {reviewError && (
+                    <p role="alert" className="registration-error">
+                      {reviewError}
+                    </p>
+                  )}
+                  {driver.appeal.status === "pending" ? (
+                    <div className="dialog-actions">
+                      <button
+                        className="primary"
+                        disabled={reviewing}
+                        onClick={() => void resolveAppeal("accepted")}
+                      >
+                        Accept appeal and reinstate
+                      </button>
+                      <button
+                        className="danger"
+                        disabled={reviewing}
+                        onClick={() => void resolveAppeal("upheld")}
+                      >
+                        Uphold suspension
+                      </button>
+                    </div>
+                  ) : (
+                    <p>
+                      This appeal has already been resolved. Refresh
+                      registrations.
+                    </p>
+                  )}
+                </>
+              );
+            }
             if (detail.kind === "driverStatus") {
               const d = drivers.find((x) => x.id === detail.id)!;
               if (d.live) {
@@ -1772,6 +2060,38 @@ function AdminWorkspace({
                     <h2>{d.name}</h2>
                     <p>Choose the next review decision for this application.</p>
                     <Badge>{d.status}</Badge>
+                    {d.reviewReason && (
+                      <p>Latest reviewer feedback: {d.reviewReason}</p>
+                    )}
+                    {actions.some(
+                      (action) =>
+                        action.status === "changesRequested" ||
+                        action.status === "rejected" ||
+                        action.status === "suspended",
+                    ) && (
+                      <div className="dialog-form">
+                        <label>
+                          Reason for changes, rejection, or suspension
+                          <textarea
+                            value={reviewReason}
+                            onChange={(event) => {
+                              setReviewReason(event.target.value);
+                              setReviewError("");
+                            }}
+                            disabled={reviewing}
+                            aria-describedby="review-reason-help"
+                            aria-invalid={!!reviewError}
+                            maxLength={1000}
+                            rows={4}
+                            placeholder="Explain the decision and any next steps for the driver."
+                          />
+                        </label>
+                        <p id="review-reason-help">
+                          The driver will see this feedback.{" "}
+                          {Array.from(reviewReason).length}/1,000 characters.
+                        </p>
+                      </div>
+                    )}
                     {reviewError && (
                       <p className="registration-error" role="alert">
                         {reviewError}
@@ -1840,7 +2160,7 @@ function AdminWorkspace({
                     {v.plate} · {v.driver}
                   </p>
                   <Badge>{v.status}</Badge>
-                  <VehicleDetails vehicle={v} />
+                  <VehicleDetails vehicle={v} accessToken={accessToken} />
                   {v.live ? (
                     <VerificationDocuments
                       key={v.driverId}

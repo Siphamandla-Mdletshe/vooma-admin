@@ -1,5 +1,6 @@
 import { apiBaseUrl } from "./auth";
-import type { Driver, Vehicle } from "./data";
+import type { Driver, Vehicle, DriverAppeal } from "./data";
+import { applicationStatusLabels } from "./application-filters";
 
 export type RegistrationDocument = {
   id: string;
@@ -20,13 +21,17 @@ export type RegistrationDocuments = {
   }[];
 };
 type Registration = {
+  appeal?: DriverAppeal | null;
+  vehiclePhotoId?: string | null;
   id: string;
   status: string;
   version: number;
+  reviewReason: string | null;
   createdAt: number;
   updatedAt: number;
   profile: { name: string; email: string; phone: string; city: string } | null;
   vehicle: {
+    bodyType?: string;
     plate: string;
     make: string;
     model: string;
@@ -68,15 +73,6 @@ export async function registrationRequest(
   return response;
 }
 
-const statuses: Record<string, string> = {
-  draft: "Incomplete",
-  submitted: "Pending review",
-  underReview: "Under review",
-  changesRequested: "Changes requested",
-  rejected: "Rejected",
-  approved: "Approved",
-  suspended: "Suspended",
-};
 const date = (value: number) =>
   new Date(value).toLocaleDateString("en-ZA", {
     day: "numeric",
@@ -100,18 +96,23 @@ export async function loadRegistrations(
       items: Registration[];
       nextCursor: string | null;
     };
-    records.push(...page.items);
+    records.push(
+      ...page.items.filter((record) =>
+        Object.hasOwn(applicationStatusLabels, record.status),
+      ),
+    );
     cursor = page.nextCursor;
   } while (cursor);
   const vehicles: Vehicle[] = [];
   const drivers: Driver[] = records.map((record) => {
     const vehicle = record.vehicle;
     const name = record.profile?.name || "Profile not completed";
-    const status = statuses[record.status] || record.status;
+    const status = applicationStatusLabels[record.status];
     if (vehicle)
       vehicles.push({
         ...vehicle,
         live: true,
+        photoId: record.vehiclePhotoId,
         id: record.id,
         driverId: record.id,
         driver: name,
@@ -122,6 +123,12 @@ export async function loadRegistrations(
     return {
       live: true,
       applicationVersion: record.version,
+      reviewReason: record.reviewReason,
+      appeal: record.appeal,
+      vehicleBodyType: vehicle?.bodyType,
+      createdAt: record.createdAt,
+      updatedAt: record.updatedAt,
+      vehicleMake: vehicle?.make,
       id: record.id,
       name,
       email: record.profile?.email || "Not provided",
@@ -139,13 +146,29 @@ export async function loadRegistrations(
   return { drivers, vehicles };
 }
 
+export type ReviewStatus =
+  "underReview" | "changesRequested" | "rejected" | "approved" | "suspended";
+
+export function reviewReasonError(status: ReviewStatus, reason = "") {
+  if (!["changesRequested", "rejected", "suspended"].includes(status))
+    return null;
+  if (!reason.trim()) return "Enter a reason the driver can act on.";
+  if (Array.from(reason).length > 1000)
+    return "Keep the reason to 1,000 characters or fewer.";
+  return null;
+}
+
+export class RegistrationConflictError extends Error {}
+
 export async function updateRegistrationStatus(
   driverId: string,
   accessToken: string,
   expectedVersion: number,
-  status:
-    "underReview" | "changesRequested" | "rejected" | "approved" | "suspended",
+  status: ReviewStatus,
+  reason?: string,
 ) {
+  const validationError = reviewReasonError(status, reason);
+  if (validationError) throw new Error(validationError);
   let response: Response;
   try {
     response = await fetch(
@@ -157,7 +180,15 @@ export async function updateRegistrationStatus(
           "Content-Type": "application/json",
           Authorization: `Bearer ${accessToken}`,
         },
-        body: JSON.stringify({ expectedVersion, status }),
+        body: JSON.stringify({
+          expectedVersion,
+          status,
+          ...((status === "changesRequested" ||
+            status === "rejected" ||
+            status === "suspended") && {
+            reason: reason!.trim(),
+          }),
+        }),
         cache: "no-store",
         credentials: "omit",
       },
@@ -166,6 +197,8 @@ export async function updateRegistrationStatus(
     throw new Error("Unable to reach the Vooma API. Check that it is running.");
   }
   if (!response.ok) {
+    if (response.status === 400)
+      throw new Error("Enter a reason between 1 and 1,000 characters.");
     if (response.status === 401)
       throw new Error(
         "Your admin session has expired. Sign out and sign in again.",
@@ -175,7 +208,7 @@ export async function updateRegistrationStatus(
         "This registration is no longer available. Refresh the list.",
       );
     if (response.status === 409)
-      throw new Error(
+      throw new RegistrationConflictError(
         "This application changed. Refresh registrations and try again.",
       );
     throw new Error(
@@ -183,4 +216,42 @@ export async function updateRegistrationStatus(
     );
   }
   return (await response.json()) as { status: string; version: number };
+}
+
+export async function decideSuspensionAppeal(
+  driverId: string,
+  accessToken: string,
+  expectedVersion: number,
+  decision: "accepted" | "upheld",
+  reason: string,
+) {
+  if (!reason.trim() || Array.from(reason).length > 2000)
+    throw new Error("Enter a decision reason between 1 and 2,000 characters.");
+  const response = await fetch(
+    apiBaseUrl() +
+      `/v1/admin/drivers/${encodeURIComponent(driverId)}/appeal/decision`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({
+        expectedVersion,
+        decision,
+        reason: reason.trim(),
+      }),
+      credentials: "omit",
+      cache: "no-store",
+    },
+  );
+  if (response.status === 409)
+    throw new RegistrationConflictError(
+      "This appeal changed or the application is no longer eligible. Refresh registrations and review it again.",
+    );
+  if (!response.ok)
+    throw new Error(
+      "Unable to resolve the appeal. Refresh registrations and try again.",
+    );
+  return response.json();
 }

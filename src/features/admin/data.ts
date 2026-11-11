@@ -1,6 +1,12 @@
 export type Driver = {
+  appeal?: DriverAppeal | null;
+  vehicleBodyType?: string;
   live?: boolean;
   applicationVersion?: number;
+  reviewReason?: string | null;
+  createdAt?: number;
+  updatedAt?: number;
+  vehicleMake?: string;
   id: string;
   name: string;
   email: string;
@@ -16,6 +22,8 @@ export type Driver = {
 };
 
 export type Vehicle = {
+  bodyType?: string;
+  photoId?: string | null;
   live?: boolean;
   id: string;
   driverId: string;
@@ -28,6 +36,14 @@ export type Vehicle = {
   colour: string;
   status: string;
   submitted: string;
+};
+
+export type DriverAppeal = {
+  status: "pending" | "upheld" | "accepted";
+  message: string;
+  submittedAt: number;
+  decisionReason: string | null;
+  resolvedAt: number | null;
 };
 
 // Deterministic demo records keep the reference totals, filters and pagination consistent.

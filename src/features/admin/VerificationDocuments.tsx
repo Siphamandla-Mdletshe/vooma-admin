@@ -6,6 +6,8 @@ import {
 } from "./registrations";
 
 const labels: Record<string, string> = {
+  vehicleFront: "Vehicle photo — front",
+  vehicleRear: "Vehicle photo — rear",
   identity: "Identity document",
   selfie: "Driver photo",
   licenceFront: "Driver’s licence — front",
